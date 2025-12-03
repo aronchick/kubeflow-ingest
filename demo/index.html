@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Expanso + LMCache: Automatic Cache Invalidation for RAG</title>
+    <meta name="description" content="When your data changes, your cache should too. ~25 lines of YAML replaces 500+ lines of custom code.">
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-light: #818cf8;
+            --secondary: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --bg: #0f172a;
+            --bg-light: #1e293b;
+            --bg-lighter: #334155;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --border: #475569;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.7;
+            font-size: 18px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 0 2rem;
+        }
+
+        /* Hero */
+        .hero {
+            padding: 5rem 0 3rem;
+            text-align: center;
+        }
+
+        .badge {
+            display: inline-block;
+            background: var(--bg-light);
+            border: 1px solid var(--border);
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 1.5rem;
+        }
+
+        .hero h1 {
+            font-size: 3rem;
+            font-weight: 700;
+            line-height: 1.2;
+            margin-bottom: 1.5rem;
+        }
+
+        .hero h1 .highlight {
+            background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero .subtitle {
+            font-size: 1.25rem;
+            color: var(--text-muted);
+            max-width: 600px;
+            margin: 0 auto 2rem;
+        }
+
+        .cta-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.875rem 1.5rem;
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            font-weight: 500;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-light);
+        }
+
+        .btn-secondary {
+            background: var(--bg-light);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-lighter);
+        }
+
+        /* Section styling */
+        section {
+            padding: 4rem 0;
+        }
+
+        section h2 {
+            font-size: 2rem;
+            margin-bottom: 1.5rem;
+        }
+
+        section h3 {
+            font-size: 1.35rem;
+            margin-bottom: 1rem;
+            color: var(--primary-light);
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: var(--text-muted);
+        }
+
+        p strong {
+            color: var(--text);
+        }
+
+        /* Story Section */
+        .story {
+            background: var(--bg-light);
+            border-radius: 1rem;
+            padding: 2.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .story-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+        }
+
+        /* The Problem - Visual */
+        .problem-visual {
+            background: var(--bg-light);
+            border: 1px solid var(--border);
+            border-radius: 1rem;
+            padding: 2rem;
+            margin: 2rem 0;
+        }
+
+        .timeline {
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 0.5rem;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--border);
+        }
+
+        .timeline-item {
+            position: relative;
+            padding-bottom: 1.5rem;
+        }
+
+        .timeline-item:last-child {
+            padding-bottom: 0;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -1.65rem;
+            top: 0.5rem;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--border);
+        }
+
+        .timeline-item.bad::before {
+            background: var(--danger);
+        }
+
+        .timeline-item.good::before {
+            background: var(--secondary);
+        }
+
+        .timeline-time {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 0.25rem;
+        }
+
+        .timeline-content {
+            color: var(--text);
+        }
+
+        /* Code blocks */
+        .code-comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        @media (max-width: 768px) {
+            .code-comparison {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .code-block {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            overflow: hidden;
+        }
+
+        .code-block.bad {
+            border-color: var(--danger);
+        }
+
+        .code-block.good {
+            border-color: var(--secondary);
+        }
+
+        .code-header {
+            padding: 0.75rem 1rem;
+            font-size: 0.9rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .code-block.bad .code-header {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--danger);
+        }
+
+        .code-block.good .code-header {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--secondary);
+        }
+
+        .code-header .lines {
+            font-size: 0.8rem;
+            opacity: 0.8;
+        }
+
+        pre {
+            padding: 1.25rem;
+            overflow-x: auto;
+            font-size: 0.85rem;
+            line-height: 1.6;
+        }
+
+        code {
+            font-family: 'SF Mono', 'Fira Code', 'Monaco', monospace;
+        }
+
+        .comment { color: #6b7280; }
+        .keyword { color: #c084fc; }
+        .string { color: #86efac; }
+        .property { color: #93c5fd; }
+
+        /* Stats */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        @media (max-width: 600px) {
+            .stats {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .stat {
+            background: var(--bg-light);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--secondary);
+        }
+
+        .stat-label {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+        }
+
+        /* How it works */
+        .how-it-works {
+            background: var(--bg-light);
+        }
+
+        .flow-diagram {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin: 2rem 0;
+            padding: 2rem;
+            background: var(--bg);
+            border-radius: 1rem;
+        }
+
+        .flow-box {
+            background: var(--bg-light);
+            border: 2px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1.25rem 1.5rem;
+            text-align: center;
+            min-width: 150px;
+        }
+
+        .flow-box h4 {
+            color: var(--primary-light);
+            margin-bottom: 0.25rem;
+            font-size: 1rem;
+        }
+
+        .flow-box p {
+            font-size: 0.85rem;
+            margin: 0;
+        }
+
+        .flow-arrow {
+            font-size: 1.5rem;
+            color: var(--secondary);
+        }
+
+        /* Steps */
+        .steps {
+            counter-reset: step;
+        }
+
+        .step {
+            display: flex;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+            align-items: flex-start;
+        }
+
+        .step-number {
+            flex-shrink: 0;
+            width: 3rem;
+            height: 3rem;
+            background: var(--primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        .step-content h3 {
+            margin-bottom: 0.5rem;
+        }
+
+        .step-content p {
+            margin-bottom: 0.75rem;
+        }
+
+        .step-content code {
+            display: block;
+            background: var(--bg);
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
+            font-size: 0.9rem;
+            border: 1px solid var(--border);
+        }
+
+        /* What you get */
+        .benefits {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        @media (max-width: 600px) {
+            .benefits {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .benefit {
+            background: var(--bg-light);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+        }
+
+        .benefit-icon {
+            font-size: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .benefit h4 {
+            margin-bottom: 0.5rem;
+            color: var(--text);
+        }
+
+        .benefit p {
+            font-size: 0.95rem;
+            margin: 0;
+        }
+
+        /* FAQ */
+        .faq-item {
+            background: var(--bg-light);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .faq-item h4 {
+            color: var(--text);
+            margin-bottom: 0.75rem;
+        }
+
+        .faq-item p {
+            margin: 0;
+            font-size: 0.95rem;
+        }
+
+        /* Footer */
+        footer {
+            padding: 3rem 0;
+            text-align: center;
+            border-top: 1px solid var(--border);
+        }
+
+        footer a {
+            color: var(--primary-light);
+            text-decoration: none;
+            margin: 0 1rem;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        .footer-links {
+            margin-bottom: 1rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2rem;
+            }
+
+            section {
+                padding: 3rem 0;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Hero -->
+<section class="hero">
+    <div class="container">
+        <div class="badge">Open Source Demo</div>
+        <h1>When your data changes,<br><span class="highlight">your cache should too.</span></h1>
+        <p class="subtitle">
+            Automatically invalidate LLM cache when your documents update.
+            No custom code. No stale answers. Just 25 lines of YAML.
+        </p>
+        <div class="cta-buttons">
+            <a href="https://github.com/expanso-io/lmcache-demo" class="btn btn-primary">
+                View on GitHub
+            </a>
+            <a href="#quickstart" class="btn btn-secondary">
+                Quick Start
+            </a>
+        </div>
+    </div>
+</section>
+
+<!-- The Story -->
+<section>
+    <div class="container">
+        <h2>The Problem We're Solving</h2>
+
+        <div class="story">
+            <div class="story-icon">🤖</div>
+            <h3>You've built a RAG system. It's working great.</h3>
+            <p>
+                Your LLM pulls context from your document database. You've added caching
+                with <strong>LMCache</strong> to speed things up and reduce costs.
+                Response times dropped from 3 seconds to 200ms. Everyone's happy.
+            </p>
+        </div>
+
+        <div class="story">
+            <div class="story-icon">📝</div>
+            <h3>Then someone updates a document.</h3>
+            <p>
+                Your vacation policy changed from 15 days to 25 days. The database is updated.
+                But your LLM? It's still serving the <strong>cached</strong> version.
+                When employees ask "How many vacation days do I have?", they get the wrong answer.
+            </p>
+        </div>
+
+        <div class="problem-visual">
+            <h4 style="margin-bottom: 1rem; color: var(--text);">What happens without cache invalidation:</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <div class="timeline-time">9:00 AM</div>
+                    <div class="timeline-content">HR updates vacation policy: 15 days → 25 days</div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-time">9:15 AM</div>
+                    <div class="timeline-content">Employee asks: "How many vacation days do I get?"</div>
+                </div>
+                <div class="timeline-item bad">
+                    <div class="timeline-time">9:15 AM</div>
+                    <div class="timeline-content"><strong style="color: var(--danger);">LLM answers: "15 days"</strong> (from stale cache)</div>
+                </div>
+                <div class="timeline-item bad">
+                    <div class="timeline-time">9:30 AM</div>
+                    <div class="timeline-content"><strong style="color: var(--danger);">Angry employee emails HR</strong></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="story">
+            <div class="story-icon">😰</div>
+            <h3>This is the cache staleness problem.</h3>
+            <p>
+                KV cache is the <strong>single most important optimization</strong> for production LLM systems.
+                But stale cache means wrong answers. Wrong answers mean angry users.
+                And manually invalidating cache? That's a recipe for bugs and forgotten edge cases.
+            </p>
+        </div>
+    </div>
+</section>
+
+<!-- The Solution -->
+<section style="background: var(--bg-light);">
+    <div class="container">
+        <h2>The Solution: Automatic Invalidation</h2>
+        <p>
+            <strong>Expanso</strong> watches your database for changes and automatically tells
+            <strong>LMCache</strong> to clear stale entries. When your data changes, your cache
+            updates within seconds. No custom code required.
+        </p>
+
+        <div class="problem-visual" style="background: var(--bg);">
+            <h4 style="margin-bottom: 1rem; color: var(--text);">What happens WITH automatic invalidation:</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <div class="timeline-time">9:00 AM</div>
+                    <div class="timeline-content">HR updates vacation policy: 15 days → 25 days</div>
+                </div>
+                <div class="timeline-item good">
+                    <div class="timeline-time">9:00 AM</div>
+                    <div class="timeline-content"><strong style="color: var(--secondary);">Expanso detects the change</strong></div>
+                </div>
+                <div class="timeline-item good">
+                    <div class="timeline-time">9:00 AM</div>
+                    <div class="timeline-content"><strong style="color: var(--secondary);">LMCache invalidates stale entry</strong></div>
+                </div>
+                <div class="timeline-item">
+                    <div class="timeline-time">9:15 AM</div>
+                    <div class="timeline-content">Employee asks: "How many vacation days do I get?"</div>
+                </div>
+                <div class="timeline-item good">
+                    <div class="timeline-time">9:15 AM</div>
+                    <div class="timeline-content"><strong style="color: var(--secondary);">LLM answers: "25 days"</strong> (fresh data!)</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- The Comparison -->
+<section>
+    <div class="container">
+        <h2>How Would You Build This?</h2>
+        <p>
+            Without Expanso, you'd need to write custom integration code. Here's the comparison:
+        </p>
+
+        <div class="code-comparison">
+            <div class="code-block bad">
+                <div class="code-header">
+                    <span>Without Expanso</span>
+                    <span class="lines">500+ lines</span>
+                </div>
+                <pre><code><span class="comment"># You'd need to build:</span>
+<span class="comment"># - Database connection pooling</span>
+<span class="comment"># - Change detection (triggers or polling)</span>
+<span class="comment"># - Retry logic with backoff</span>
+<span class="comment"># - Error handling</span>
+<span class="comment"># - Logging & monitoring</span>
+<span class="comment"># - Graceful shutdown</span>
+<span class="comment"># - Health checks</span>
+<span class="comment"># - Configuration management</span>
+<span class="comment"># - Deployment scripts</span>
+<span class="comment"># - Tests</span>
+<span class="comment"># ...</span>
+<span class="comment"># 3-5 days of work</span>
+<span class="comment"># Ongoing maintenance</span></code></pre>
+            </div>
+            <div class="code-block good">
+                <div class="code-header">
+                    <span>With Expanso</span>
+                    <span class="lines">~25 lines</span>
+                </div>
+                <pre><code><span class="keyword">input:</span>
+  <span class="property">generate:</span>
+    <span class="property">interval:</span> <span class="string">2s</span>
+
+<span class="keyword">pipeline:</span>
+  <span class="property">processors:</span>
+    - <span class="property">sql_raw:</span>
+        <span class="property">driver:</span> <span class="string">postgres</span>
+        <span class="property">dsn:</span> <span class="string">"${POSTGRES_DSN}"</span>
+        <span class="property">query:</span> <span class="string">"SELECT id, title
+          FROM documents
+          WHERE updated_at >
+            NOW() - INTERVAL '5s'"</span>
+    - <span class="property">mapping:</span> |
+        <span class="string">root.document_id = this.id</span>
+
+<span class="keyword">output:</span>
+  <span class="property">http_client:</span>
+    <span class="property">url:</span> <span class="string">"${LMCACHE_API}/clear"</span></code></pre>
+            </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value">25</div>
+                <div class="stat-label">Lines of YAML</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">10</div>
+                <div class="stat-label">Minutes to set up</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">0</div>
+                <div class="stat-label">Custom code to maintain</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- How it Works -->
+<section class="how-it-works">
+    <div class="container">
+        <h2>How It Works</h2>
+        <p>
+            Expanso is a data pipeline tool (powered by Redpanda Connect) that connects
+            your data sources to your cache layer. Here's the flow:
+        </p>
+
+        <div class="flow-diagram">
+            <div class="flow-box">
+                <h4>PostgreSQL</h4>
+                <p>Documents table</p>
+            </div>
+            <span class="flow-arrow">→</span>
+            <div class="flow-box">
+                <h4>Expanso</h4>
+                <p>Polls every 2s</p>
+            </div>
+            <span class="flow-arrow">→</span>
+            <div class="flow-box">
+                <h4>LMCache</h4>
+                <p>/clear API</p>
+            </div>
+            <span class="flow-arrow">→</span>
+            <div class="flow-box">
+                <h4>Fresh Data</h4>
+                <p>Next query</p>
+            </div>
+        </div>
+
+        <div class="benefits">
+            <div class="benefit">
+                <div class="benefit-icon">⚡</div>
+                <h4>Near Real-Time</h4>
+                <p>Changes detected within seconds, not minutes or hours.</p>
+            </div>
+            <div class="benefit">
+                <div class="benefit-icon">🔄</div>
+                <h4>Automatic Retries</h4>
+                <p>Built-in retry logic with exponential backoff.</p>
+            </div>
+            <div class="benefit">
+                <div class="benefit-icon">📊</div>
+                <h4>Built-in Monitoring</h4>
+                <p>Metrics and logging out of the box.</p>
+            </div>
+            <div class="benefit">
+                <div class="benefit-icon">🔧</div>
+                <h4>Declarative Config</h4>
+                <p>No code to maintain. Just YAML.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Quick Start -->
+<section id="quickstart">
+    <div class="container">
+        <h2>Quick Start</h2>
+        <p>Get the demo running in under 2 minutes:</p>
+
+        <div class="steps">
+            <div class="step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <h3>Clone the repo</h3>
+                    <p>Get the demo files:</p>
+                    <code>git clone https://github.com/expanso-io/lmcache-demo && cd lmcache-demo</code>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                    <h3>Start the services</h3>
+                    <p>Spin up PostgreSQL, Redis, LMCache API, and Expanso:</p>
+                    <code>docker compose up -d</code>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                    <h3>Run the interactive demo</h3>
+                    <p>Walk through the full demo with guided steps:</p>
+                    <code>./demo.sh</code>
+                </div>
+            </div>
+
+            <div class="step">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                    <h3>Try it yourself</h3>
+                    <p>Update a document and watch the cache invalidate:</p>
+                    <code>docker compose exec postgres psql -U demo -d demo -c \<br>  "UPDATE documents SET content='New policy' WHERE id=1;"</code>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Token Anxiety Section -->
+<section id="token-anxiety">
+    <div class="container">
+        <h2>Bonus: Cure Your "Token Anxiety"</h2>
+        <p>
+            <strong>Rate limits. Token costs. The meter running on every API call.</strong>
+            This is "token anxiety" — and it's killing agent workflows.
+        </p>
+
+        <div class="story" style="border-left: 4px solid var(--warning);">
+            <div class="story-icon">💸</div>
+            <h3>The Math That Changes Everything</h3>
+            <p>
+                When you cache, you pay for input tokens <strong>once</strong>.
+                Every subsequent cache hit? <strong>$0 input cost.</strong>
+            </p>
+            <p>
+                For agent swarms doing parallel subtasks with shared context,
+                this is "billions of dollars" in potential savings.
+            </p>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value">93%</div>
+                <div class="stat-label">Latency Reduction</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">$0</div>
+                <div class="stat-label">Input Cost on Cache Hit</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">∞</div>
+                <div class="stat-label">No Rate Limits</div>
+            </div>
+        </div>
+
+        <div class="code-block good" style="max-width: 700px; margin: 2rem auto;">
+            <div class="code-header">
+                <span>Demo: Try the Savings Dashboard</span>
+            </div>
+            <pre><code><span class="comment"># Simulate agent traffic</span>
+curl -X POST http://localhost:9000/simulate-traffic?requests=100
+
+<span class="comment"># View your savings</span>
+curl http://localhost:9000/savings | jq
+
+<span class="comment"># Output:</span>
+{
+  "summary": {
+    "cache_hits": 75,
+    "hit_rate_percent": 75.0,
+    "total_saved_dollars": 0.28
+  },
+  "projections": {
+    "monthly_requests": 100000,
+    "projected_monthly_savings_dollars": <span class="string">2100.00</span>
+  }
+}</code></pre>
+        </div>
+
+        <p style="text-align: center; color: var(--text-muted);">
+            The demo includes a <code>/savings</code> endpoint that shows token pricing
+            and calculates your potential savings based on cache hit rate.
+        </p>
+    </div>
+</section>
+
+<!-- FAQ -->
+<section style="background: var(--bg-light);">
+    <div class="container">
+        <h2>FAQ</h2>
+
+        <div class="faq-item">
+            <h4>Why not just use PostgreSQL triggers?</h4>
+            <p>
+                Triggers add complexity to your database, are harder to monitor, and don't
+                handle retries or failures gracefully. Expanso keeps your database clean
+                and handles all the edge cases.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <h4>Why polling instead of CDC (Change Data Capture)?</h4>
+            <p>
+                CDC requires Redpanda Enterprise. For most use cases, polling every 2 seconds
+                is plenty fast and works with the open-source version. The demo is designed
+                to be accessible to everyone.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <h4>Does this work with other databases?</h4>
+            <p>
+                Yes! Expanso (Redpanda Connect) supports 200+ connectors including MySQL,
+                MongoDB, S3, Kafka, and more. Just change the input configuration.
+            </p>
+        </div>
+
+        <div class="faq-item">
+            <h4>What about high-traffic production systems?</h4>
+            <p>
+                For production, you can add deduplication, batching, and rate limiting.
+                Expanso handles millions of messages per second. This demo is simplified
+                for clarity.
+            </p>
+        </div>
+    </div>
+</section>
+
+<!-- CTA -->
+<section style="text-align: center;">
+    <div class="container">
+        <h2>Ready to Try It?</h2>
+        <p style="max-width: 500px; margin: 0 auto 2rem;">
+            Clone the repo, run the demo, and see automatic cache invalidation in action.
+        </p>
+        <div class="cta-buttons">
+            <a href="https://github.com/expanso-io/lmcache-demo" class="btn btn-primary">
+                View on GitHub
+            </a>
+            <a href="https://docs.expanso.io" class="btn btn-secondary">
+                Read the Docs
+            </a>
+        </div>
+    </div>
+</section>
+
+<!-- Footer -->
+<footer>
+    <div class="container">
+        <div class="footer-links">
+            <a href="https://github.com/expanso-io/lmcache-demo">GitHub</a>
+            <a href="https://docs.expanso.io">Expanso Docs</a>
+            <a href="https://github.com/LMCache/LMCache">LMCache</a>
+            <a href="https://docs.redpanda.com/redpanda-connect">Redpanda Connect</a>
+        </div>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">
+            Built with Expanso + LMCache
+        </p>
+    </div>
+</footer>
+
+</body>
+</html>

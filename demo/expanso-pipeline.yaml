@@ -1,0 +1,73 @@
+# ============================================================
+# Expanso + LMCache: Data-Driven Cache Invalidation
+# ============================================================
+#
+# This pipeline replaces 500+ lines of custom code.
+#
+# What it does:
+#   1. Polls PostgreSQL for recently changed documents
+#   2. Detects when documents are inserted or updated
+#   3. Automatically calls LMCache /clear API
+#
+# Without Expanso: 3-5 days of integration work
+# With Expanso: 10 minutes
+#
+# ============================================================
+
+input:
+  generate:
+    interval: 2s
+    mapping: 'root = {}'
+
+pipeline:
+  processors:
+    # Query for recently updated documents
+    - sql_raw:
+        driver: postgres
+        dsn: "${POSTGRES_DSN}"
+        query: "SELECT id, title FROM documents WHERE updated_at > NOW() - INTERVAL '5 seconds'"
+
+    # Unpack results array into individual messages
+    - unarchive:
+        format: json_array
+
+    # Filter out empty results
+    - mapping: |
+        root = if this.id != null { this } else { deleted() }
+
+    # Log the change for visibility
+    - log:
+        level: INFO
+        message: 'Document changed! ID: ${! this.id }, Title: ${! this.title }'
+
+    # Transform into LMCache clear request
+    - mapping: |
+        root.instance_id = "default"
+        root.location = "LocalCPUBackend"
+        root.document_id = this.id
+        root.reason = "Document updated: " + this.title
+
+output:
+  http_client:
+    url: "${LMCACHE_API_URL}/clear"
+    verb: POST
+    headers:
+      Content-Type: application/json
+
+# ============================================================
+# That's it!
+#
+# This pipeline:
+# ✅ Monitors documents table for changes (polls every 2s)
+# ✅ Transforms events into cache invalidation requests
+# ✅ Calls LMCache API with zero custom code
+# ✅ Handles retries, errors, and logging automatically
+#
+# Compare to building this yourself:
+# ❌ PostgreSQL polling service
+# ❌ Connection management and reconnection
+# ❌ Error handling and retries
+# ❌ Logging and monitoring
+# ❌ Deployment and maintenance
+#
+# ============================================================

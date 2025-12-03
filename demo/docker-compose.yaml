@@ -1,0 +1,103 @@
+# Expanso + LMCache Demo: Data-Driven Cache Invalidation
+#
+# This demo shows how Expanso connects LMCache to your data sources,
+# automatically invalidating cache when documents change.
+#
+# Usage: docker compose up -d
+
+services:
+  # ============================================================
+  # PostgreSQL with CDC (Change Data Capture)
+  # ============================================================
+  postgres:
+    image: postgres:15
+    container_name: demo-postgres
+    environment:
+      POSTGRES_DB: demo
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"           # Required for CDC
+      - "-c"
+      - "max_replication_slots=4"     # Allow replication slots
+      - "-c"
+      - "max_wal_senders=4"           # Allow WAL streaming
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - demo-network
+
+  # ============================================================
+  # Redis - Shared cache backend for LMCache
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: demo-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - demo-network
+
+  # ============================================================
+  # LMCache Controller API (Mock for demo)
+  # In production, this would be the real LMCache API server
+  # ============================================================
+  lmcache-api:
+    image: python:3.11-slim
+    container_name: demo-lmcache-api
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./lmcache_mock_api.py:/app/api.py
+    working_dir: /app
+    command: >
+      bash -c "
+        pip install -q fastapi uvicorn &&
+        python api.py
+      "
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - demo-network
+
+  # ============================================================
+  # Expanso (Redpanda Connect) - The Magic Pipeline
+  # Connects PostgreSQL CDC to LMCache invalidation
+  # ============================================================
+  expanso:
+    image: redpandadata/connect:latest
+    container_name: demo-expanso
+    volumes:
+      - ./expanso-pipeline.yaml:/pipeline.yaml
+    command: run /pipeline.yaml
+    environment:
+      POSTGRES_DSN: "postgres://demo:demo@postgres:5432/demo?sslmode=disable"
+      LMCACHE_API_URL: "http://lmcache-api:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      lmcache-api:
+        condition: service_healthy
+    networks:
+      - demo-network
+
+networks:
+  demo-network:
+    driver: bridge

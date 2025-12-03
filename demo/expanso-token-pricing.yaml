@@ -1,0 +1,82 @@
+# ============================================================
+# Token Pricing Pipeline
+# ============================================================
+#
+# "Token anxiety" is real. This pipeline fetches current
+# LLM token prices so you can see your cache savings.
+#
+# Runs monthly (or on-demand) to update pricing data.
+#
+# ============================================================
+
+input:
+  generate:
+    interval: 720h  # Monthly (30 days)
+    mapping: |
+      root.fetch_time = now()
+      root.source = "openrouter"
+
+pipeline:
+  processors:
+    # Fetch current pricing from OpenRouter API
+    - http:
+        url: "https://openrouter.ai/api/v1/models"
+        verb: GET
+        headers:
+          Content-Type: application/json
+
+    # Extract pricing for popular models
+    - mapping: |
+        root.updated_at = now()
+        root.models = this.data.filter(m ->
+          m.id.contains("gpt-4") ||
+          m.id.contains("claude") ||
+          m.id.contains("llama")
+        ).map_each(m -> {
+          "model_id": m.id,
+          "name": m.name,
+          "input_cost_per_token": m.pricing.prompt,
+          "output_cost_per_token": m.pricing.completion,
+          "context_length": m.context_length
+        })
+
+    - log:
+        level: INFO
+        message: 'Fetched pricing for ${! this.models.length() } models'
+
+output:
+  sql_insert:
+    driver: postgres
+    dsn: "${POSTGRES_DSN}"
+    table: token_pricing
+    columns:
+      - model_id
+      - name
+      - input_cost_per_token
+      - output_cost_per_token
+      - context_length
+      - updated_at
+    args_mapping: |
+      root = this.models.map_each(m -> [
+        m.model_id,
+        m.name,
+        m.input_cost_per_token,
+        m.output_cost_per_token,
+        m.context_length,
+        now()
+      ])
+
+# ============================================================
+# Why This Matters (from the Weka conversation):
+#
+# "Token anxiety" - rate limits and pricing are killing
+# agent workflows. When you cache, you pay ONCE for input
+# tokens, then subsequent hits are essentially FREE.
+#
+# The savings calculator shows:
+# - Full price: Every request pays input token cost
+# - With cache: First request pays, subsequent = $0
+#
+# For agent swarms doing parallel subtasks, this is
+# "billions of dollars" in potential savings.
+# ============================================================
