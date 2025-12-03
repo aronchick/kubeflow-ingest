@@ -33,7 +33,7 @@ docker compose up -d
 | `docker-compose.yaml` | PostgreSQL, Redis, LMCache API, Expanso |
 | `expanso-pipeline.yaml` | **The magic** — ~25 lines that do everything |
 | `demo.sh` | Interactive walkthrough |
-| `index.html` | [Full documentation](https://expanso-io.github.io/lmcache-sync/) |
+| `index.html` | [Full documentation](https://aronchick.github.io/lmcache-sync/demo/) |
 
 ## The Pipeline (That's It. Really.)
 
