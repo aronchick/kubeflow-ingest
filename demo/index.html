@@ -896,9 +896,10 @@ curl http://localhost:9000/savings | jq
             </div>
         </div>
 
-        <div class="code-block good" style="max-width: 700px; margin: 2rem auto;">
-            <div class="code-header">
-                <span>Cache Warmup Pipeline (excerpt)</span>
+        <!-- Cache Warmup Pipeline -->
+        <div class="code-block good" style="max-width: 800px; margin: 2rem auto; border-color: var(--secondary);">
+            <div class="code-header" style="background: rgba(16, 185, 129, 0.1); color: var(--secondary);">
+                <span>expanso-cache-warmup.yaml</span>
                 <span class="lines">~30 lines</span>
             </div>
             <pre><code><span class="keyword">input:</span>
@@ -910,28 +911,78 @@ curl http://localhost:9000/savings | jq
     - <span class="property">sql_raw:</span>
         <span class="property">query:</span> <span class="string">"SELECT id, content FROM documents
           WHERE updated_at > NOW() - INTERVAL '10s'
-          AND id NOT IN (SELECT document_id
-            FROM cache_warmup_log)"</span>
+          AND id NOT IN (SELECT document_id FROM cache_warmup_log)"</span>
     - <span class="property">mapping:</span> |
-        <span class="string">root.messages = [{
-          "role": "user",
-          "content": "Summarize: " + this.content
-        }]</span>
+        <span class="string">root.messages = [{"role": "user", "content": "Summarize: " + this.content}]</span>
 
 <span class="keyword">output:</span>
   <span class="property">broker:</span>
     <span class="property">outputs:</span>
-      - <span class="property">http_client:</span>  <span class="comment"># Warm the cache</span>
-          <span class="property">url:</span> <span class="string">"${INFERENCE_API}/v1/chat/completions"</span>
-      - <span class="property">sql_insert:</span>   <span class="comment"># Log it</span>
-          <span class="property">table:</span> <span class="string">cache_warmup_log</span></code></pre>
+      - <span class="property">http_client:</span>
+          <span class="property">url:</span> <span class="string">"${INFERENCE_API}/v1/chat/completions"</span>  <span class="comment"># Warm the cache</span>
+      - <span class="property">sql_insert:</span>
+          <span class="property">table:</span> <span class="string">cache_warmup_log</span>                       <span class="comment"># Log it</span></code></pre>
+        </div>
+
+        <!-- Results Aggregator Pipeline -->
+        <div class="code-block good" style="max-width: 800px; margin: 2rem auto; border-color: var(--primary);">
+            <div class="code-header" style="background: rgba(99, 102, 241, 0.1); color: var(--primary-light);">
+                <span>expanso-results-aggregator.yaml</span>
+                <span class="lines">~35 lines</span>
+            </div>
+            <pre><code><span class="keyword">input:</span>
+  <span class="property">file:</span>
+    <span class="property">paths:</span> [<span class="string">"${TEST_RESULTS_DIR}/**/summary_*.csv"</span>]  <span class="comment"># Watch for test results</span>
+
+<span class="keyword">pipeline:</span>
+  <span class="property">processors:</span>
+    - <span class="property">mapping:</span> <span class="string">root = this.parse_csv()</span>
+    - <span class="property">unarchive:</span>
+        <span class="property">format:</span> <span class="string">json_array</span>
+    - <span class="property">mapping:</span> |
+        <span class="comment"># Calculate cost savings from cache hit rate</span>
+        <span class="string">let cache_rate = this.cache_hit_rate.number()</span>
+        <span class="string">let input_tokens = this.avg_input_tokens.number()</span>
+        <span class="string">let cost_per_request = (input_tokens / 1000000) * 3.00</span>
+        <span class="string">root.savings_per_request = cost_per_request * (cache_rate / 100)</span>
+        <span class="string">root.monthly_savings_100k = (root.savings_per_request * 100000).round(2)</span>
+
+<span class="keyword">output:</span>
+  <span class="property">http_client:</span>
+    <span class="property">url:</span> <span class="string">"${LMCACHE_API}/results"</span>  <span class="comment"># Push to dashboard</span></code></pre>
+        </div>
+
+        <!-- Backend Comparison Pipeline -->
+        <div class="code-block good" style="max-width: 800px; margin: 2rem auto; border-color: var(--warning);">
+            <div class="code-header" style="background: rgba(245, 158, 11, 0.1); color: var(--warning);">
+                <span>expanso-backend-comparison.yaml</span>
+                <span class="lines">~40 lines</span>
+            </div>
+            <pre><code><span class="keyword">input:</span>
+  <span class="property">file:</span>
+    <span class="property">paths:</span> [<span class="string">"${TEST_RESULTS_DIR}/**/summary_*.csv"</span>]
+
+<span class="keyword">pipeline:</span>
+  <span class="property">processors:</span>
+    - <span class="property">mapping:</span> |
+        <span class="comment"># Extract backend from path (dynamo-cpu, lmcache-weka, etc.)</span>
+        <span class="string">let path = meta("path")</span>
+        <span class="string">root.backend = path.re_find_all("(dynamo-cpu|lmcache-weka|vanilla-nep)").index(0)</span>
+    - <span class="property">mapping:</span> |
+        <span class="comment"># Calculate performance score (lower = better)</span>
+        <span class="string">let ttft_score = this.avg_ttft * 0.5</span>
+        <span class="string">let p95_score = this.p95_ttft * 0.3</span>
+        <span class="string">let throughput_score = (1 / this.avg_throughput) * 1000 * 0.2</span>
+        <span class="string">root.performance_score = (ttft_score + p95_score + throughput_score).round(4)</span>
+        <span class="string">root.rank_note = if this.performance_score < 0.5 { "Excellent" } else { "Good" }</span>
+
+<span class="keyword">output:</span>
+  <span class="property">http_client:</span>
+    <span class="property">url:</span> <span class="string">"${LMCACHE_API}/backend-comparison"</span>  <span class="comment"># Push ranking</span></code></pre>
         </div>
 
         <p style="text-align: center; color: var(--text-muted);">
-            All pipelines are included in the demo. See
-            <code>expanso-cache-warmup.yaml</code>,
-            <code>expanso-results-aggregator.yaml</code>, and
-            <code>expanso-backend-comparison.yaml</code>.
+            All pipelines are included in the demo repository and ready to run.
         </p>
     </div>
 </section>
