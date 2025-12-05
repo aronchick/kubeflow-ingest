@@ -245,6 +245,115 @@ async def simulate_traffic(requests: int = 50):
     }
 
 
+# Store test results and backend comparisons
+test_results = []
+backend_comparisons = []
+
+
+class TestResult(BaseModel):
+    backend: Optional[str] = "default"
+    context_size: Optional[int] = None
+    cache_hit_rate: Optional[float] = None
+    avg_ttft_ms: Optional[float] = None
+    throughput: Optional[float] = None
+    cost_per_request: Optional[float] = None
+    savings_per_request: Optional[float] = None
+    monthly_savings_100k: Optional[float] = None
+    performance_score: Optional[float] = None
+    rank_note: Optional[str] = None
+    source_file: Optional[str] = None
+
+
+@app.post("/results")
+async def receive_results(result: TestResult):
+    """
+    Receive aggregated test results from Expanso pipeline.
+
+    Called by expanso-results-aggregator.yaml when new
+    test results are detected.
+    """
+    entry = {
+        **result.dict(),
+        "received_at": datetime.now().isoformat()
+    }
+    test_results.append(entry)
+
+    # Keep only last 100
+    if len(test_results) > 100:
+        test_results.pop(0)
+
+    print(f"[RESULTS] Received: cache_rate={result.cache_hit_rate}%, savings=${result.monthly_savings_100k}/month")
+
+    return {"status": "received", "total_results": len(test_results)}
+
+
+@app.get("/results")
+async def get_results():
+    """Get all aggregated test results."""
+    return {
+        "total_results": len(test_results),
+        "results": test_results[-20:],  # Last 20
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.post("/backend-comparison")
+async def receive_backend_comparison(result: TestResult):
+    """
+    Receive backend comparison data from Expanso pipeline.
+
+    Called by expanso-backend-comparison.yaml when comparing
+    different cache backends (dynamo, lmcache, etc.)
+    """
+    entry = {
+        **result.dict(),
+        "received_at": datetime.now().isoformat()
+    }
+    backend_comparisons.append(entry)
+
+    # Keep only last 200
+    if len(backend_comparisons) > 200:
+        backend_comparisons.pop(0)
+
+    print(f"[COMPARISON] {result.backend}: score={result.performance_score} ({result.rank_note})")
+
+    return {"status": "received", "total_comparisons": len(backend_comparisons)}
+
+
+@app.get("/backend-comparison")
+async def get_backend_comparison():
+    """
+    Get backend comparison summary.
+
+    Shows which cache backend is winning for each context size.
+    """
+    # Group by context size and find winner
+    from collections import defaultdict
+    by_context = defaultdict(list)
+
+    for comp in backend_comparisons:
+        ctx = comp.get("context_size", 0)
+        by_context[ctx].append(comp)
+
+    winners = {}
+    for ctx, comps in by_context.items():
+        if comps:
+            winner = min(comps, key=lambda x: x.get("performance_score", 999))
+            winners[ctx] = {
+                "winner": winner.get("backend"),
+                "score": winner.get("performance_score"),
+                "ttft_ms": winner.get("avg_ttft_ms"),
+                "all_backends": [c.get("backend") for c in comps]
+            }
+
+    return {
+        "total_comparisons": len(backend_comparisons),
+        "winners_by_context": winners,
+        "recent_comparisons": backend_comparisons[-10:],
+        "timestamp": datetime.now().isoformat()
+    }
+
+
 @app.get("/")
 async def root():
     """API documentation redirect."""
@@ -257,7 +366,11 @@ async def root():
             "GET /health": "Health check",
             "GET /stats": "View invalidation statistics",
             "GET /savings": "View token cost savings dashboard",
-            "POST /simulate-traffic": "Simulate agent traffic for demo"
+            "POST /simulate-traffic": "Simulate agent traffic for demo",
+            "GET /results": "View aggregated test results",
+            "POST /results": "Receive test results (from Expanso)",
+            "GET /backend-comparison": "View backend comparison summary",
+            "POST /backend-comparison": "Receive backend comparison (from Expanso)"
         }
     }
 

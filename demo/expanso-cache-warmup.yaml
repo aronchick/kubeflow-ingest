@@ -1,0 +1,99 @@
+# ============================================================
+# Expanso Pipeline: Document Change → Cache Warmup
+# ============================================================
+#
+# When documents change in the database, we need to:
+#   1. Invalidate the old cache (handled by main pipeline)
+#   2. PRE-WARM the cache with the new document
+#
+# This pipeline detects document changes and triggers a
+# cache warmup request to the inference server, ensuring
+# the first real user query is FAST (cache hit) not slow.
+#
+# Why Expanso? The kv-cache-tester can't:
+#   - Detect document changes
+#   - Trigger warmup automatically
+#   - Coordinate between data source and cache
+#
+# ============================================================
+
+input:
+  generate:
+    interval: 5s
+    mapping: 'root = {}'
+
+pipeline:
+  processors:
+    # Query for recently updated documents
+    - sql_raw:
+        driver: postgres
+        dsn: "${POSTGRES_DSN}"
+        query: |
+          SELECT id, title, content
+          FROM documents
+          WHERE updated_at > NOW() - INTERVAL '10 seconds'
+          AND id NOT IN (
+            SELECT document_id FROM cache_warmup_log
+            WHERE warmed_at > NOW() - INTERVAL '1 hour'
+          )
+
+    - unarchive:
+        format: json_array
+
+    # Filter empty results
+    - mapping: |
+        root = if this.id != null { this } else { deleted() }
+
+    # Log warmup trigger
+    - log:
+        level: INFO
+        message: |
+          Warming cache for document: ${! this.id } - ${! this.title }
+
+    # Transform to warmup request
+    # This calls the inference server to pre-cache the document
+    - mapping: |
+        root.model = "default"
+        root.messages = [
+          {
+            "role": "system",
+            "content": "You are a helpful assistant with access to company documents."
+          },
+          {
+            "role": "user",
+            "content": "Summarize this document in one sentence: " + this.content.slice(0, 2000)
+          }
+        ]
+        root.max_tokens = 50
+        root.document_id = this.id
+        root.warmup = true
+
+output:
+  broker:
+    outputs:
+      # Send warmup request to inference server
+      - http_client:
+          url: "${INFERENCE_API_URL:-http://localhost:8000}/v1/chat/completions"
+          verb: POST
+          headers:
+            Content-Type: application/json
+
+      # Log that we warmed this document (prevent duplicate warmups)
+      - sql_insert:
+          driver: postgres
+          dsn: "${POSTGRES_DSN}"
+          table: cache_warmup_log
+          columns:
+            - document_id
+            - warmed_at
+          args_mapping: |
+            root = [[this.document_id, now()]]
+
+# ============================================================
+# The result: When HR updates the vacation policy at 9:00 AM,
+# by 9:00:05 AM the cache is already warm. The first employee
+# to ask "How many vacation days do I get?" gets a FAST answer.
+#
+# Without this: First query = cold cache = 2-3 second wait
+# With this: First query = warm cache = 200ms response
+# ============================================================

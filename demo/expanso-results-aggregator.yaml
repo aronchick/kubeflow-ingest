@@ -1,0 +1,97 @@
+# ============================================================
+# Expanso Pipeline: Test Results → Savings Calculator
+# ============================================================
+#
+# The kv-cache-tester produces CSV files with cache hit rates
+# and performance metrics. This pipeline:
+#   1. Watches for new test result files
+#   2. Parses the CSV data
+#   3. Calculates cost savings based on cache hit rate
+#   4. Pushes to the LMCache dashboard
+#
+# Why Expanso? The tester can't:
+#   - Calculate cost savings in real-time
+#   - Aggregate across multiple test runs
+#   - Push to external dashboards
+#   - Alert on thresholds
+#
+# ============================================================
+
+input:
+  file:
+    paths:
+      - "${TEST_RESULTS_DIR:-./results}/**/summary_*.csv"
+    scanner:
+      to_the_end: {}
+    delete_on_finish: false
+
+pipeline:
+  processors:
+    # Parse CSV into structured data
+    - mapping: |
+        root = this.parse_csv()
+
+    # Flatten array of rows
+    - unarchive:
+        format: json_array
+
+    # Extract key metrics and calculate savings
+    - mapping: |
+        let cache_rate = this.cache_hit_rate.number()
+        let input_tokens = this.avg_input_tokens.or("0").number()
+        let throughput = this.avg_throughput.or("0").number()
+
+        # Token pricing ($ per 1M tokens)
+        let price_per_million = 3.00  # Claude 3.5 Sonnet baseline
+
+        # Cost without caching (every request pays full price)
+        let cost_per_request = (input_tokens / 1000000) * price_per_million
+
+        # With caching, cached portion is FREE
+        let cached_cost = cost_per_request * (1 - (cache_rate / 100))
+        let savings_per_request = cost_per_request - cached_cost
+
+        root.context_size = this.context_size
+        root.cache_hit_rate = cache_rate
+        root.avg_ttft_ms = this.avg_ttft.or("0").number() * 1000
+        root.throughput = throughput
+        root.cost_per_request = cost_per_request.round(6)
+        root.cached_cost = cached_cost.round(6)
+        root.savings_per_request = savings_per_request.round(6)
+        root.monthly_savings_100k = (savings_per_request * 100000).round(2)
+        root.timestamp = now()
+        root.source_file = meta("path")
+
+    # Log for visibility
+    - log:
+        level: INFO
+        message: |
+          Cache Rate: ${! this.cache_hit_rate }% | TTFT: ${! this.avg_ttft_ms }ms | Monthly Savings (100k req): $${! this.monthly_savings_100k }
+
+    # Filter out incomplete data
+    - mapping: |
+        root = if this.cache_hit_rate != null { this } else { deleted() }
+
+output:
+  http_client:
+    url: "${LMCACHE_API_URL:-http://localhost:9000}/results"
+    verb: POST
+    headers:
+      Content-Type: application/json
+
+# ============================================================
+# Example output for a 75% cache hit rate:
+#
+# {
+#   "context_size": 32000,
+#   "cache_hit_rate": 75,
+#   "avg_ttft_ms": 180,
+#   "throughput": 1250,
+#   "cost_per_request": 0.000096,
+#   "cached_cost": 0.000024,
+#   "savings_per_request": 0.000072,
+#   "monthly_savings_100k": 7.20
+# }
+#
+# At 75% cache hit, you save $7.20/month per 100k requests!
+# ============================================================

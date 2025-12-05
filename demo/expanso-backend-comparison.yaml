@@ -1,0 +1,84 @@
+# ============================================================
+# Expanso Pipeline: Multi-Backend Performance Comparison
+# ============================================================
+#
+# The kv-cache-tester runs separate tests for each backend:
+#   - dynamo-cpu, dynamo-weka
+#   - lmcache-dram, lmcache-weka
+#   - vanilla-nep, vanilla-pc
+#
+# This pipeline aggregates results across ALL backends and
+# produces a unified comparison showing which is best for
+# your workload.
+#
+# Why Expanso? The tester produces separate files per backend.
+# Manual comparison is tedious. This pipeline:
+#   - Automatically detects new results from any backend
+#   - Normalizes and compares metrics
+#   - Ranks backends by performance/cost
+#   - Pushes to a unified dashboard
+#
+# ============================================================
+
+input:
+  file:
+    paths:
+      - "${TEST_RESULTS_DIR:-./results}/**/summary_*.csv"
+    scanner:
+      to_the_end: {}
+
+pipeline:
+  processors:
+    # Parse CSV
+    - mapping: |
+        root = this.parse_csv()
+
+    - unarchive:
+        format: json_array
+
+    # Extract backend name from path
+    - mapping: |
+        let path = meta("path")
+        let backend = path.re_find_all("(dynamo-cpu|dynamo-weka|lmcache-dram|lmcache-weka|lmcache-nixl|vanilla-nep|vanilla-pc)")
+
+        root.backend = if backend.length() > 0 { backend.index(0) } else { "unknown" }
+        root.context_size = this.context_size.number()
+        root.cache_hit_rate = this.cache_hit_rate.number()
+        root.avg_ttft = this.avg_ttft.or("0").number()
+        root.avg_throughput = this.avg_throughput.or("0").number()
+        root.p95_ttft = this.p95_ttft.or("0").number()
+        root.timestamp = now()
+        root.source_file = meta("path")
+
+    # Calculate performance score (lower is better)
+    # Weighted: 50% TTFT, 30% P95, 20% inverse throughput
+    - mapping: |
+        let ttft_score = this.avg_ttft * 0.5
+        let p95_score = this.p95_ttft * 0.3
+        let throughput_score = if this.avg_throughput > 0 { (1 / this.avg_throughput) * 1000 * 0.2 } else { 100 }
+
+        root.performance_score = (ttft_score + p95_score + throughput_score).round(4)
+        root.rank_note = if this.performance_score < 0.5 { "Excellent" } else if this.performance_score < 1.0 { "Good" } else if this.performance_score < 2.0 { "Fair" } else { "Poor" }
+
+    # Log comparison
+    - log:
+        level: INFO
+        message: |
+          Backend: ${! this.backend } | Cache: ${! this.cache_hit_rate }% | TTFT: ${! this.avg_ttft }s | Score: ${! this.performance_score } (${! this.rank_note })
+
+output:
+  http_client:
+    url: "${LMCACHE_API_URL:-http://localhost:9000}/backend-comparison"
+    verb: POST
+    headers:
+      Content-Type: application/json
+
+# ============================================================
+# Example output:
+#
+# Backend: lmcache-weka | Cache: 75% | TTFT: 0.18s | Score: 0.42 (Excellent)
+# Backend: dynamo-cpu   | Cache: 75% | TTFT: 0.35s | Score: 0.89 (Good)
+# Backend: vanilla-nep  | Cache: 75% | TTFT: 1.20s | Score: 2.15 (Poor)
+#
+# Now you can see at a glance: lmcache-weka wins for this workload!
+# ============================================================

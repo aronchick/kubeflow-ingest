@@ -31,7 +31,10 @@ docker compose up -d
 | File | Purpose |
 |------|---------|
 | `docker-compose.yaml` | PostgreSQL, Redis, LMCache API, Expanso |
-| `expanso-pipeline.yaml` | **The magic** — ~25 lines that do everything |
+| `expanso-pipeline.yaml` | Document change → cache invalidation |
+| `expanso-results-aggregator.yaml` | Test results → savings calculator |
+| `expanso-cache-warmup.yaml` | Document change → cache pre-warming |
+| `expanso-backend-comparison.yaml` | Multi-backend performance comparison |
 | `demo.sh` | Interactive walkthrough |
 | `index.html` | [Full documentation](https://aronchick.github.io/lmcache-sync/demo/) |
 

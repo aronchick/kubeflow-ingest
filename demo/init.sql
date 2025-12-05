@@ -122,6 +122,47 @@ INSERT INTO cache_events (event_type, model_id, input_tokens, output_tokens, lat
 ('hit', 'gpt-4o', 8000, 280, 150, 0.020),
 ('hit', 'gpt-4o', 8000, 310, 165, 0.020);
 
+-- ============================================================
+-- Cache Warmup Log
+-- ============================================================
+-- Tracks which documents have been pre-warmed to avoid duplicates
+-- Used by expanso-cache-warmup.yaml pipeline
+
+CREATE TABLE cache_warmup_log (
+    id SERIAL PRIMARY KEY,
+    document_id INTEGER REFERENCES documents(id),
+    warmed_at TIMESTAMP DEFAULT NOW(),
+    warmup_latency_ms INTEGER,
+    status TEXT DEFAULT 'success'
+);
+
+CREATE INDEX idx_warmup_document ON cache_warmup_log(document_id);
+CREATE INDEX idx_warmup_time ON cache_warmup_log(warmed_at);
+
+-- ============================================================
+-- Test Results Table
+-- ============================================================
+-- Stores aggregated test results from kv-cache-tester
+-- Populated by expanso-results-aggregator.yaml pipeline
+
+CREATE TABLE test_results (
+    id SERIAL PRIMARY KEY,
+    backend TEXT,
+    context_size INTEGER,
+    cache_hit_rate DECIMAL(5,2),
+    avg_ttft_ms DECIMAL(10,2),
+    throughput DECIMAL(10,2),
+    cost_per_request DECIMAL(12,8),
+    savings_per_request DECIMAL(12,8),
+    monthly_savings DECIMAL(10,2),
+    performance_score DECIMAL(6,4),
+    source_file TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_results_backend ON test_results(backend);
+CREATE INDEX idx_results_cache ON test_results(cache_hit_rate);
+
 -- Verify setup
 DO $$
 BEGIN
@@ -129,5 +170,7 @@ BEGIN
     RAISE NOTICE 'Documents table created with % rows', (SELECT COUNT(*) FROM documents);
     RAISE NOTICE 'Token pricing table created with % models', (SELECT COUNT(*) FROM token_pricing);
     RAISE NOTICE 'Cache events table created with % events', (SELECT COUNT(*) FROM cache_events);
+    RAISE NOTICE 'Cache warmup log table created';
+    RAISE NOTICE 'Test results table created';
     RAISE NOTICE 'CDC publication "lmcache_pub" created';
 END $$;
