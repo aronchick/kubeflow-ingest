@@ -1,6 +1,7 @@
 # Reference docs (not part of demo)
 LMCache/
 docs_reference/
+kv-cache-tester/
 
 # Working documents
 EXPANSO_LMCACHE_DEMO_PLAN.md
