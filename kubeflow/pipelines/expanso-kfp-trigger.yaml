@@ -1,0 +1,95 @@
+# ============================================================
+# Watch PVC → Trigger Kubeflow Pipeline
+# ============================================================
+#
+# This pipeline watches for new documents landing on PVC
+# and triggers a Kubeflow Pipeline run to process them.
+#
+# Flow:
+#   New file on PVC → Expanso → KFP API → Pipeline run
+#
+# ============================================================
+
+input:
+  file:
+    paths:
+      - "/mnt/pvc/incoming/**/*.json"
+    scanner:
+      to_the_end: {}
+    delete_on_finish: false
+
+pipeline:
+  processors:
+    # Parse the incoming document
+    - mapping: |
+        root = content().parse_json()
+
+    # Log the trigger
+    - log:
+        level: INFO
+        message: 'Triggering KFP for document: ${! this.document_id } from ${! this.metadata.source_system }'
+
+    # Build KFP run request
+    # This follows the KFP v2 API structure
+    - mapping: |
+        root = {
+          "display_name": "Document Embedding - " + this.document_id,
+          "description": "Auto-triggered by Expanso for " + this.metadata.source_system + " document",
+          "pipeline_spec": {
+            "pipeline_id": "${KFP_PIPELINE_ID}",
+            "pipeline_version_id": "${KFP_PIPELINE_VERSION}"
+          },
+          "runtime_config": {
+            "parameters": {
+              "input_path": "/mnt/pvc/incoming/" + this.metadata.source_system + "/" + this.document_id + ".json",
+              "source_system": this.metadata.source_system,
+              "document_id": this.document_id
+            }
+          }
+        }
+
+output:
+  # In production: POST to KFP API
+  # For demo: write to a trigger log
+  switch:
+    cases:
+      - check: env("KFP_API_URL") != ""
+        output:
+          http_client:
+            url: "${KFP_API_URL}/apis/v2beta1/runs"
+            verb: POST
+            headers:
+              Content-Type: application/json
+              # Add auth header if needed
+              # Authorization: "Bearer ${KFP_TOKEN}"
+            successful_on:
+              - 200
+              - 201
+
+      # Fallback: log to file for demo/testing
+      - output:
+          file:
+            path: /mnt/pvc/trigger_log.jsonl
+            codec: lines
+
+# ============================================================
+# Production Notes:
+#
+# 1. KFP Authentication:
+#    - Multi-user mode: Use OIDC tokens
+#    - Single-user mode: Often no auth needed
+#    - Set KFP_TOKEN environment variable
+#
+# 2. Pipeline Configuration:
+#    - Set KFP_PIPELINE_ID to your embedding pipeline ID
+#    - Pipeline should accept input_path and document_id params
+#
+# 3. Rate limiting:
+#    - Add rate_limit to http_client if many documents
+#    - Consider batching documents into single pipeline runs
+#
+# 4. Error handling:
+#    - Failed triggers should be retried
+#    - Consider dead-letter queue for persistent failures
+#
+# ============================================================

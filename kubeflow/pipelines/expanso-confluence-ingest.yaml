@@ -1,0 +1,158 @@
+# ============================================================
+# Confluence → PVC: Wiki Content Ingestion for Kubeflow
+# ============================================================
+#
+# This pipeline demonstrates ingesting Confluence wiki pages
+# into a PVC for Kubeflow Pipelines to process.
+#
+# Current version: Uses 'generate' to mock Confluence responses
+# Production version: Replace with http_client + Confluence REST API
+#
+# Flow:
+#   Confluence → Expanso → HTML cleanup → PVC → KFP
+#
+# ============================================================
+
+input:
+  generate:
+    interval: 120s  # Poll every 2 minutes
+    mapping: |
+      # --------------------------------------------------------
+      # Mock Confluence page metadata
+      # In production, replace this entire input block with:
+      #
+      # input:
+      #   http_client:
+      #     url: "${CONFLUENCE_URL}/wiki/rest/api/content"
+      #     verb: GET
+      #     headers:
+      #       Authorization: "Basic ${CONFLUENCE_AUTH}"
+      #     params:
+      #       expand: "body.storage,version,space"
+      #       orderby: "history.lastUpdated desc"
+      #       limit: "50"
+      # --------------------------------------------------------
+      let spaces = ["ENG", "HR", "PRODUCT", "SUPPORT"]
+      let space = $spaces.index(random_int() % 4)
+
+      let titles = [
+        "Engineering Runbook: Incident Response",
+        "Onboarding Guide for New Engineers",
+        "API Design Guidelines",
+        "Production Deployment Checklist",
+        "Architecture Decision Records"
+      ]
+      let title = $titles.index(random_int() % 5)
+
+      root.id = uuid_v4()
+      root.title = $title
+      root.space_key = $space
+      root.space_name = match $space {
+        "ENG" => "Engineering",
+        "HR" => "Human Resources",
+        "PRODUCT" => "Product Management",
+        "SUPPORT" => "Customer Support",
+        _ => "General"
+      }
+
+      # Confluence returns HTML content
+      root.content = "<h1>" + $title + "</h1>" +
+                     "<p>This is the page content with <strong>formatting</strong>.</p>" +
+                     "<ul><li>Item 1</li><li>Item 2</li><li>Item 3</li></ul>" +
+                     "<p>Last updated with important information.</p>"
+
+      root.source = "Confluence"
+      root.last_modified = now()
+      root.version = random_int() % 50 + 1
+      root.author = "Platform Team"
+      root.web_url = "https://company.atlassian.net/wiki/spaces/" + $space + "/pages/" + root.id
+
+pipeline:
+  processors:
+    # Log incoming page
+    - log:
+        level: INFO
+        message: 'Confluence page updated: "${! this.title }" in space ${! this.space_key }'
+
+    # Deduplicate based on page ID + version
+    - dedupe:
+        cache: confluence_seen
+        key: '${! this.id }-v${! this.version }'
+        drop_on_err: false
+
+    # Clean HTML content - strip tags for plain text
+    - mapping: |
+        root = this
+        # Strip HTML tags for plain text extraction
+        root.plain_text = this.content.re_replace_all("<[^>]*>", " ").re_replace_all("\\s+", " ").trim()
+        root.word_count = root.plain_text.split(" ").length()
+        root.has_code_blocks = this.content.contains("<code>") || this.content.contains("<pre>")
+
+    # Log extraction results
+    - log:
+        level: DEBUG
+        message: 'Extracted ${! this.word_count } words from "${! this.title }"'
+
+    # Add KFP metadata for downstream processing
+    - mapping: |
+        root.kfp_metadata = {
+          "ingested_at": now(),
+          "source_system": "confluence",
+          "space_key": this.space_key,
+          "space_name": this.space_name,
+          "document_id": this.id,
+          "page_title": this.title,
+          "page_version": this.version,
+          "word_count": this.word_count,
+          "has_code": this.has_code_blocks,
+          "ready_for_embedding": true
+        }
+
+    # Final structure for KFP consumption
+    - mapping: |
+        root = {
+          "document_id": this.id,
+          "title": this.title,
+          "text": this.plain_text,
+          "metadata": this.kfp_metadata,
+          "source_url": this.web_url
+        }
+
+output:
+  file:
+    path: '/mnt/pvc/incoming/confluence/${! json("document_id") }.json'
+    codec: lines
+
+# ============================================================
+# Cache resource for deduplication
+# ============================================================
+cache_resources:
+  - label: confluence_seen
+    memory:
+      default_ttl: 24h
+      compaction_interval: 5m
+
+# ============================================================
+# Production Notes:
+#
+# 1. Authentication:
+#    - Cloud: Use API tokens (Basic auth with email:token)
+#    - Server: Use personal access tokens or OAuth
+#
+# 2. Pagination: Confluence returns paginated results
+#    - Use the _links.next URL for continuation
+#    - Implement cursor-based pagination in production
+#
+# 3. Content expansion:
+#    - expand=body.storage gets raw HTML content
+#    - expand=body.view gets rendered HTML
+#    - expand=body.export_view for clean export
+#
+# 4. Attachments: Pages can have file attachments
+#    - Query /content/{id}/child/attachment for files
+#    - Route attachments through Dockling if PDF/DOCX
+#
+# 5. Spaces to watch: Configure via environment variable
+#    - CONFLUENCE_SPACES="ENG,PRODUCT,SUPPORT"
+#
+# ============================================================

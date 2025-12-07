@@ -1,0 +1,142 @@
+# ============================================================
+# SharePoint → PVC: Enterprise Document Ingestion for Kubeflow
+# ============================================================
+#
+# This pipeline demonstrates the pattern for ingesting documents
+# from SharePoint into a PVC for Kubeflow Pipelines to process.
+#
+# Current version: Uses 'generate' to mock SharePoint responses
+# Production version: Replace with http_client + Microsoft Graph API
+#
+# Flow:
+#   SharePoint → Expanso → (Dockling if PDF/DOCX) → PVC → KFP
+#
+# ============================================================
+
+input:
+  generate:
+    interval: 60s  # Poll every minute
+    mapping: |
+      # --------------------------------------------------------
+      # Mock SharePoint document metadata
+      # In production, replace this entire input block with:
+      #
+      # input:
+      #   http_client:
+      #     url: "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/drive/root/delta"
+      #     verb: GET
+      #     headers:
+      #       Authorization: "Bearer ${SHAREPOINT_TOKEN}"
+      #     rate_limit:
+      #       count: 60
+      #       interval: 1m
+      # --------------------------------------------------------
+      let doc_types = ["pdf", "docx", "txt", "md"]
+      let doc_type = $doc_types.index(random_int() % 4)
+
+      root.id = uuid_v4()
+      root.filename = "Document_" + now().format_timestamp("20060102_150405") + "." + $doc_type
+      root.content = "This is sample document content that would come from SharePoint. " +
+                     "In production, this would be the actual file content or a download URL."
+      root.source = "SharePoint"
+      root.site = "Enterprise Knowledge Base"
+      root.library = "Shared Documents"
+      root.modified_at = now()
+      root.modified_by = "user@company.com"
+      root.size_bytes = random_int() % 1000000 + 10000
+      root.web_url = "https://company.sharepoint.com/sites/kb/Shared%20Documents/" + root.filename
+
+pipeline:
+  processors:
+    # Log incoming document
+    - log:
+        level: INFO
+        message: 'SharePoint document detected: ${! this.filename } (${! this.size_bytes } bytes)'
+
+    # Deduplicate based on document ID + modified time
+    # Prevents reprocessing unchanged documents
+    - dedupe:
+        cache: sharepoint_seen
+        key: '${! this.id }-${! this.modified_at }'
+        drop_on_err: false
+
+    # Route PDF/DOCX through Dockling for text extraction
+    - switch:
+      - check: this.filename.has_suffix(".pdf") || this.filename.has_suffix(".docx")
+        processors:
+          - log:
+              level: INFO
+              message: 'Routing ${! this.filename } through Dockling for text extraction...'
+          - subprocess:
+              name: ./mock_dockling.sh
+              args: ["extract", "${! this.filename }"]
+          - mapping: |
+              root = this
+              root.transformed = true
+              root.transformer = "dockling"
+              root.extracted_text = content().string()
+
+      # Text files pass through directly
+      - check: this.filename.has_suffix(".txt") || this.filename.has_suffix(".md")
+        processors:
+          - mapping: |
+              root = this
+              root.transformed = false
+              root.extracted_text = this.content
+
+    # Add KFP metadata for downstream processing
+    - mapping: |
+        root.kfp_metadata = {
+          "ingested_at": now(),
+          "source_system": "sharepoint",
+          "source_site": this.site,
+          "source_library": this.library,
+          "document_id": this.id,
+          "original_filename": this.filename,
+          "transformed_by": this.transformer,
+          "ready_for_embedding": true,
+          "text_length": this.extracted_text.length()
+        }
+
+    # Final structure for KFP consumption
+    - mapping: |
+        root = {
+          "document_id": this.id,
+          "text": this.extracted_text,
+          "metadata": this.kfp_metadata,
+          "source_url": this.web_url
+        }
+
+output:
+  file:
+    path: '/mnt/pvc/incoming/sharepoint/${! json("document_id") }.json'
+    codec: lines
+
+# ============================================================
+# Cache resource for deduplication
+# ============================================================
+cache_resources:
+  - label: sharepoint_seen
+    memory:
+      default_ttl: 24h
+      compaction_interval: 5m
+
+# ============================================================
+# Production Notes:
+#
+# 1. Authentication: Use Azure AD OAuth2 flow
+#    - Register app in Azure AD
+#    - Grant Sites.Read.All permission
+#    - Use client_credentials flow for daemon apps
+#
+# 2. Delta queries: Microsoft Graph supports delta queries
+#    that return only changed items since last sync
+#
+# 3. Rate limits: Graph API has rate limits
+#    - Use rate_limit config in http_client
+#    - Implement exponential backoff
+#
+# 4. Large files: For files > 4MB, use download URL
+#    - Fetch metadata first, then download content
+#
+# ============================================================
